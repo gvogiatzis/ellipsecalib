@@ -1,6 +1,41 @@
+import argparse
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    subparsers = parser.add_subparsers(help="the various commands", dest='cmd')
+
+    parser_cal = subparsers.add_parser("cal", help="Calibrate from image sequence. Will output calibration matrix K, the unistorted K matrix and the radial distortion parameters D.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser_und = subparsers.add_parser("und", help="Undistort an image sequence. The output images will have a 'und_' prefix.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+
+    parser_cal.add_argument("image", type=str,  nargs="+",
+                        help="One or more of the calib pattern image filenames. Wildcards should work, e.g 'img*.png'")
+    parser_cal.add_argument("-k", "--kmatrix", type=str,default="calibration.txt",
+                        help="The output filename where the  calibration matrix will be written")
+    parser_cal.add_argument("-u", "--undkmatrix", type=str,default="undcalibration.txt",
+                        help="The output filename where the undistorted calibration matrix will be written")
+    parser_cal.add_argument("-d", "--dmatrix", type=str,default="dist.txt",
+                        help="The output filename where the  distortion coefficients will be written")
+
+    parser_und.add_argument("image", type=str,  nargs="+",
+                        help="One or more image filenames to undistort given the parameters provided. Wildcards should work, e.g 'img*.png'")
+    parser_und.add_argument("-k", "--kmatrix", type=str, default="calibration.txt",
+                            help="Filename of textfile that holds K matrix")
+    parser_und.add_argument("-u", "--undkmatrix", type=str,default="undcalibration.txt",
+                        help="Filename of textfile that holds undistorted calibration matrix")
+    parser_und.add_argument("-d", "--dmatrix", type=str, default="dist.txt",
+                            help="Filename of textfile that holds radial distortion parameters")
+
+    args = parser.parse_args()
+    if args.cmd is None:
+        parser.print_usage()
+        exit(0)
+
+
 import numpy as np
 from skimage import data
-from skimage.io import imshow, imread
+from skimage.io import imshow, imread,imsave
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import math
@@ -181,11 +216,13 @@ def detect_pattern(fname, show_image=False):
 def detect_pattern_v2(fname, show_image=False):
 # fname='data/RDMcalibration/left_57.jpg'
 # show_image=True
-    print(f"Detecting pattern in {fname}")
+    print(f"******* Detecting pattern in {fname} *******")
     image = rgb2gray(imread(fname))
     p = np.loadtxt('pattern.txt')
     p = p[:, 0:2]
     ellipses = detect_ellipses(image)
+    print(f"{len(ellipses)} dots detected in image.")
+
     el_centres = np.array([[e.centroid[1], e.centroid[0]] for e in ellipses])
     Ne = len(ellipses)
     Np = len(p)
@@ -202,6 +239,7 @@ def detect_pattern_v2(fname, show_image=False):
     nn = NearestNeighbors().fit(el_centres)
     best_inliers=[]
     best_coverage=0
+
     for q_p in quad_p:
         for q_e in quad_e:
             H = sk.transform.estimate_transform("projective",p[q_p], el_centres[q_e])
@@ -210,18 +248,19 @@ def detect_pattern_v2(fname, show_image=False):
             coverage = len(set(nind[inliers]))
             if coverage>best_coverage:
                 best_coverage = coverage
-                print(best_coverage)
+                print(f"\rPattern dots found: {best_coverage} out of {Np}",end='')
                 best_inliers = inliers
                 model = H
-    print(f"Brute force: {sum(best_inliers)}")
     ndist,nind = map(lambda x:x.squeeze(), nn.kneighbors(model(p),1))
     best_inliers = ndist<10.0
+    print("")
     for i in range(2):
         model = sk.transform.estimate_transform("projective", p[best_inliers], el_centres[nind[best_inliers]])
         ndist,nind = map(lambda x:x.squeeze(), nn.kneighbors(model(p),1))
         best_inliers = ndist<10.0
-        print(f"refinement #{i+1}: {sum(best_inliers)}")
+        print(f"Pattern dots found after refinement #{i+1}: {sum(best_inliers)} out of {Np}")
 
+    print("")
     pts = p[best_inliers]
     pts3d = np.concatenate((pts,np.zeros((len(pts),1))),axis=1)
     pts2d = el_centres[nind[best_inliers]]
@@ -243,24 +282,48 @@ def detect_pattern_v2(fname, show_image=False):
         plt.show()
     return pts3d, pts2d
 
-def calibrate_sequence(seq_path):
-    fnames = sorted(glob(seq_path))
+# def calibrate_sequence(seq_path):
+def calibrate_sequence(fnames):
+    print("")
+    fnames = sorted(fnames)
+    # fnames = sorted(glob(seq_path))
     all_pts3d=[]
     all_pts2d=[]
     for fname in fnames:
-        pts3d, pts2d = detect_pattern_v2(fname,show_image=True)
+        pts3d, pts2d = detect_pattern_v2(fname,show_image=False)
         if len(pts3d)>0:
             all_pts3d.append(pts3d.astype(np.float32))
             all_pts2d.append(pts2d.astype(np.float32))
     image = rgb2gray(imread(fnames[0]))
     h,  w = image.shape[:2]
     ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(all_pts3d, all_pts2d, (w,h), None, None)
+    print(f"--- Final Reprojection error: {ret} ---\n")
 
     newcameramtx, roi=cv2.getOptimalNewCameraMatrix(mtx,dist,(w,h),0,(w,h))
-    return mtx, dist
+    return mtx, newcameramtx, dist
+
 
 if __name__ == '__main__':
-    K1, D1 = calibrate_sequence("data/RDMcalibration/left_*.jpg")
-    K2, D2 = calibrate_sequence("data/RDMcalibration/right_*.jpg")
+    if args.cmd == "cal":
+        imfilenames = sorted(args.image)
+        K, uK, D = calibrate_sequence(imfilenames)
+        np.savetxt(args.kmatrix, K)
+        np.savetxt(args.undkmatrix, uK)
+        np.savetxt(args.dmatrix, D)
+    elif args.cmd == "und":
+        K = np.loadtxt(args.kmatrix)
+        uK = np.loadtxt(args.undkmatrix)
+        D = np.loadtxt(args.dmatrix)
+        imfilenames = sorted(args.image)
+        for fname in imfilenames:
+            print(f"Undistorting {fname}.")
+            image = imread(fname)
+            image_und = cv2.undistort(image, K, D, None, uK)
+            imsave("und_" + fname, image_und)
 
-    ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(objp, leftp, rightp, K1, D1, K2, D2, image_size)
+    # print(args)
+
+    # K1, D1 = calibrate_sequence("data/RDMcalibration/left_*.jpg")
+    # K2, D2 = calibrate_sequence("data/RDMcalibration/right_*.jpg")
+    #
+    # ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(objp, leftp, rightp, K1, D1, K2, D2, image_size)
