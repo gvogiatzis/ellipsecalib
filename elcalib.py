@@ -1,31 +1,63 @@
-import argparse
+import argparse,textwrap
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    subparsers = parser.add_subparsers(help="the various commands", dest='cmd')
+    # top level parser
+    subparsers = parser.add_subparsers(help="Calibration commands:", dest='cmd')
+    parser_cal = subparsers.add_parser("cal", description='Compute intrinsic parameters of a camera from a sequence of images of a calibration pattern.',
+                                       help="Calibrate from image sequence. Will output calibration matrix K, the unistorted K matrix and the radial distortion parameters D.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser_und = subparsers.add_parser("und", description='Remove the effect of radial distortion from a set of images',
+                                       help="Undistort an image sequence. The output images will have a 'und_' prefix.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser_ste = subparsers.add_parser("ste", help="Calibrate a stereo-rig  from image sequences. Will output the two K matrices, the R-t transformation between cameras and the rad distortion coefficients D1 and D2. Can use existing monocular calibrations to initialize.",
+                                       formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+                                       description='Calibrate a stereo rig using images taken from left and right camera, of a calibration pattern.',
+                                       epilog="Notes: (1) You should make sure that the left and right sequences have the same number of images and these images are sorted so that pairs of elements from each list correspond to the same frame.  (2) If the left and right camera files exist, they will be used to constrain the optimisation. Otherwise the filenames are used to output the computed camera matrices.")
 
-    parser_cal = subparsers.add_parser("cal", help="Calibrate from image sequence. Will output calibration matrix K, the unistorted K matrix and the radial distortion parameters D.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser_und = subparsers.add_parser("und", help="Undistort an image sequence. The output images will have a 'und_' prefix.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-
+    # Single camera calibration
     parser_cal.add_argument("image", type=str,  nargs="+",
                         help="One or more of the calib pattern image filenames. Wildcards should work, e.g 'img*.png'")
-    parser_cal.add_argument("-k", "--kmatrix", type=str,default="calibration.txt",
+    parser_cal.add_argument("-k", "--kmatrix", type=str,default="k.txt",
                         help="The output filename where the  calibration matrix will be written")
-    parser_cal.add_argument("-u", "--undkmatrix", type=str,default="undcalibration.txt",
+    parser_cal.add_argument("-u", "--undkmatrix", type=str,default="newk.txt",
                         help="The output filename where the undistorted calibration matrix will be written")
-    parser_cal.add_argument("-d", "--dmatrix", type=str,default="dist.txt",
+    parser_cal.add_argument("-d", "--dmatrix", type=str,default="d.txt",
                         help="The output filename where the  distortion coefficients will be written")
+    parser_cal.add_argument("-t", "--threshold", type=float, default=5.0,
+                        help="The threshold reprojection distance for inlier pattern dots.")
+    parser_cal.add_argument("-s", "--showimage", action='store_true',
+                        help="Will render each pattern image with the detected dots.")
 
+    # Warp images to remove radial distortion
     parser_und.add_argument("image", type=str,  nargs="+",
                         help="One or more image filenames to undistort given the parameters provided. Wildcards should work, e.g 'img*.png'")
-    parser_und.add_argument("-k", "--kmatrix", type=str, default="calibration.txt",
+    parser_und.add_argument("-k", "--kmatrix", type=str, default="k.txt",
                             help="Filename of textfile that holds K matrix")
-    parser_und.add_argument("-u", "--undkmatrix", type=str,default="undcalibration.txt",
+    parser_und.add_argument("-u", "--undkmatrix", type=str,default="newk.txt",
                         help="Filename of textfile that holds undistorted calibration matrix")
-    parser_und.add_argument("-d", "--dmatrix", type=str, default="dist.txt",
+    parser_und.add_argument("-d", "--dmatrix", type=str, default="d.txt",
                             help="Filename of textfile that holds radial distortion parameters")
+
+    # stereo camera rig calibration
+    parser_ste.add_argument("-l","--left", type=str,  nargs="+",
+                        help="One or more of the left pattern image filenames. Wildcards should work, e.g 'img*.png'",
+                        required=True)
+    parser_ste.add_argument("-r","--right", type=str,  nargs="+",
+                        help="One or more of the right pattern image filenames. Wildcards should work, e.g 'img*.png'",
+                        required=True)
+    parser_ste.add_argument("-t", "--threshold", type=float, default=5.0,
+                        help="The threshold reprojection distance for inlier pattern dots.")
+    parser_ste.add_argument("-s", "--showimage", action='store_true',
+                        help="Will render each pattern image with the detected dots.")
+    parser_ste.add_argument("-rk", "--rightkmatrix", type=str,default="rightk.txt",
+                        help="Name of textfile that stores the right calibration matrix.")
+    parser_ste.add_argument("-lk", "--leftkmatrix", type=str,default="leftk.txt",
+                        help="Name of textfile that stores the left calibration matrix")
+    parser_ste.add_argument("-ld", "--leftdmatrix", type=str,default="leftd.txt",
+                        help="Name of textfile that stores the left lin. distortion params matrix")
+    parser_ste.add_argument("-rd", "--rightdmatrix", type=str,default="rightd.txt",
+                        help="Name of textfile that stores the right lin. distortion params matrix")
 
     args = parser.parse_args()
     if args.cmd is None:
@@ -41,6 +73,7 @@ import matplotlib.patches as mpatches
 import math
 import numpy as np
 import scipy
+import os.path
 
 from sklearn.neighbors import NearestNeighbors
 
@@ -109,7 +142,7 @@ def detect_ellipses(image):
     for r in regionprops(label_image):
         a = r.major_axis_length
         b = r.minor_axis_length
-        if r.area>MIN_ELLIP_SIZE and r.area<MAX_ELLIP_SIZE and abs(math.log(a/b)) < math.log(MAX_ASPECT_RATIO):
+        if MIN_ELLIP_SIZE< r.area <MAX_ELLIP_SIZE and b>1 and abs(math.log(a/b)) < math.log(MAX_ASPECT_RATIO):
             ellipse_regions.append(r)
     return ellipse_regions
 
@@ -139,83 +172,7 @@ def distsignatures(D):
 
     return signatures
 
-def detect_pattern(fname, show_image=False):
-    # fname="data/house00.png"
-    # show_image=True
-    print(f"Detecting pattern in {fname}")
-    image = rgb2gray(imread(fname))
-    p = np.loadtxt('pattern.txt')
-    p = p[:, 0:2]
-    ellipses = detect_ellipses(image)
-    el_centres = np.array([[e.centroid[1], e.centroid[0]] for e in ellipses])
-    Ne = len(ellipses)
-    Np = len(p)
-
-    Dp = scipy.spatial.distance_matrix(p, p)
-    De = np.zeros((Ne, Ne))
-
-    for i, e1 in enumerate(ellipses):
-        for j, e2 in enumerate(ellipses):
-            De[i, j] = ellipse2ellipsedist(e1, e2)
-
-    signatures_p = distsignatures(Dp)
-    signatures_e = distsignatures(De)
-
-    Nmatches = 100
-    C = signatures_p @ signatures_e.T
-
-    matches_idx = C.ravel().argsort()[-Nmatches:][::-1]
-    idx_p, idx_e = np.unravel_index(matches_idx, C.shape)
-
-    src = p[idx_p]
-    tar = el_centres[idx_e]
-
-
-    homography = sk.transform.ProjectiveTransform
-    model, inliers = sk.measure.ransac(data=(src, tar), model_class=homography, min_samples=4, residual_threshold=15,
-                                       max_trials=1000)
-    if inliers is None or sum(inliers)==0:
-        return np.zeros((0,3)), np.zeros((0,2))
-    print(f"Ransac#1 inliers: {sum(inliers)} out of {len(inliers)}")
-
-    D = scipy.spatial.distance_matrix(model(p), el_centres)
-
-    b=D.min(axis=1)<5.0
-    src = p[b]
-    tar = el_centres[D.argmin(axis=1)[b]]
-    model, inliers = sk.measure.ransac(data=(src, tar), model_class=homography, min_samples=4, residual_threshold=5,
-                                       max_trials=100)
-    if inliers is None or sum(inliers)==0:
-        return np.zeros((0,3)), np.zeros((0,2))
-    print(f"Ransac#2 inliers: {sum(inliers)} out of {len(inliers)}")
-
-
-    pts = src[inliers]
-    pts3d = np.concatenate((pts,np.zeros((len(pts),1))),axis=1)
-    pts2d = tar[inliers]
-
-
-    p_mapped = model(pts)
-
-    if show_image:
-        fig, ax = plt.subplots()
-        ax.imshow(image, cmap=plt.cm.gray)
-        for el in ellipses:
-            a = el.major_axis_length
-            b = el.minor_axis_length
-            y0, x0 = el.centroid
-            phi = el.orientation
-            patch = mpatches.Ellipse((x0, y0), a, b, 90-phi*180/np.pi, fill=False, edgecolor='red', linewidth=0.5)
-            ax.add_patch(patch)
-        ax.plot(pts2d[:, 0], pts2d[:, 1], 'g+')
-        ax.plot(p_mapped[:, 0], p_mapped[:, 1], 'mx')
-        plt.show()
-
-    return pts3d, pts2d, C
-
-def detect_pattern_v2(fname, show_image=False):
-# fname='data/RDMcalibration/left_57.jpg'
-# show_image=True
+def detect_pattern(fname, show_image=False,inlier_threshold=5.0):
     print(f"******* Detecting pattern in {fname} *******")
     image = rgb2gray(imread(fname))
     p = np.loadtxt('pattern.txt')
@@ -244,7 +201,7 @@ def detect_pattern_v2(fname, show_image=False):
         for q_e in quad_e:
             H = sk.transform.estimate_transform("projective",p[q_p], el_centres[q_e])
             ndist,nind = map(lambda x:x.squeeze(), nn.kneighbors(H(p),1))
-            inliers = ndist<10.0
+            inliers = ndist<inlier_threshold
             coverage = len(set(nind[inliers]))
             if coverage>best_coverage:
                 best_coverage = coverage
@@ -252,20 +209,19 @@ def detect_pattern_v2(fname, show_image=False):
                 best_inliers = inliers
                 model = H
     ndist,nind = map(lambda x:x.squeeze(), nn.kneighbors(model(p),1))
-    best_inliers = ndist<10.0
+    best_inliers = ndist<inlier_threshold
     print("")
     for i in range(2):
         model = sk.transform.estimate_transform("projective", p[best_inliers], el_centres[nind[best_inliers]])
         ndist,nind = map(lambda x:x.squeeze(), nn.kneighbors(model(p),1))
-        best_inliers = ndist<10.0
+        best_inliers = ndist<inlier_threshold
         print(f"Pattern dots found after refinement #{i+1}: {sum(best_inliers)} out of {Np}")
 
     print("")
-    pts = p[best_inliers]
-    pts3d = np.concatenate((pts,np.zeros((len(pts),1))),axis=1)
-    pts2d = el_centres[nind[best_inliers]]
+    pts3d = np.concatenate((p,np.zeros((len(p),1))),axis=1)
+    pts2d = el_centres[nind]
 
-    p_mapped = model(pts)
+    p_mapped = model(p)
 
     if show_image:
         fig, ax = plt.subplots()
@@ -277,36 +233,64 @@ def detect_pattern_v2(fname, show_image=False):
             phi = el.orientation
             patch = mpatches.Ellipse((x0, y0), a, b, 90-phi*180/np.pi, fill=False, edgecolor='red', linewidth=0.5)
             ax.add_patch(patch)
-        ax.plot(pts2d[:, 0], pts2d[:, 1], 'g+')
-        ax.plot(p_mapped[:, 0], p_mapped[:, 1], 'mx')
+        ax.plot(pts2d[best_inliers, 0], pts2d[best_inliers, 1], 'g+')
+        ax.plot(p_mapped[best_inliers, 0], p_mapped[best_inliers, 1], 'mx')
         plt.show()
-    return pts3d, pts2d
 
-# def calibrate_sequence(seq_path):
-def calibrate_sequence(fnames):
+    return pts3d, pts2d, best_inliers
+
+def calibrate_sequence(fnames,inlier_threshold=5.0, show_image=False):
     print("")
     fnames = sorted(fnames)
-    # fnames = sorted(glob(seq_path))
     all_pts3d=[]
     all_pts2d=[]
     for fname in fnames:
-        pts3d, pts2d = detect_pattern_v2(fname,show_image=False)
+        pts3d, pts2d, inliers = detect_pattern(fname,show_image=show_image,inlier_threshold=inlier_threshold)
+        pts3d = pts3d[inliers]
+        pts2d = pts2d[inliers]
         if len(pts3d)>0:
             all_pts3d.append(pts3d.astype(np.float32))
             all_pts2d.append(pts2d.astype(np.float32))
     image = rgb2gray(imread(fnames[0]))
     h,  w = image.shape[:2]
+    # print(all_pts3d)
+    # print(all_pts2d)
     ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(all_pts3d, all_pts2d, (w,h), None, None)
     print(f"--- Final Reprojection error: {ret} ---\n")
 
     newcameramtx, roi=cv2.getOptimalNewCameraMatrix(mtx,dist,(w,h),0,(w,h))
     return mtx, newcameramtx, dist
 
+def calibrate_stereo_rig(leftfnames,rightfnames,inlier_threshold=5.0, show_image=False,K1=None, D1=None, K2=None, D2=None):
+    all_pts3d=[]
+    all_pts2d_L=[]
+    all_pts2d_R=[]
+    for leftimg, rightimg in zip(leftfnames, rightfnames):
+        pts3d_L, pts2d_L, inliers_L = detect_pattern(leftimg, show_image=show_image, inlier_threshold=inlier_threshold)
+        pts3d_R, pts2d_R, inliers_R = detect_pattern(rightimg, show_image=show_image, inlier_threshold=inlier_threshold)
+        inliers = inliers_L & inliers_R
+        print(f"{sum(inliers)} dots visible in both left and right cameras")
+        pts3d = pts3d_L[inliers] # could have used pts3d_R[inliers], they are the same.
+        pts2d_L = pts2d_L[inliers]
+        pts2d_R = pts2d_R[inliers]
+        all_pts3d.append(pts3d.astype(np.float32))
+        all_pts2d_L.append(pts2d_L.astype(np.float32))
+        all_pts2d_R.append(pts2d_R.astype(np.float32))
+    image = rgb2gray(imread(leftfnames[0]))
+    h, w = image.shape[:2]
+    ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(all_pts3d, all_pts2d_L, all_pts2d_R, cameraMatrix1=K1, distCoeffs1=D1, cameraMatrix2=K2, distCoeffs2=D2, imageSize=(w,h), flags=cv2.CALIB_USE_INTRINSIC_GUESS)
+    # ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(all_pts3d, all_pts2d_L, all_pts2d_R, cameraMatrix1=K1, distCoeffs1=D1, cameraMatrix2=K2, distCoeffs2=D2, imageSize=(w,h), flags=cv2.CALIB_USE_INTRINSIC_GUESS)
+    # ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(all_pts3d, all_pts2d_L, all_pts2d_R, cameraMatrix1=K1, distCoeffs1=D1, cameraMatrix2=K2, distCoeffs2=D2, imageSize=(w,h), flags=cv2.CALIB_FIX_INTRINSIC)
+    # ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(all_pts3d, all_pts2d_L, all_pts2d_R, cameraMatrix1=None, distCoeffs1=None, cameraMatrix2=None, distCoeffs2=None, imageSize=(w,h))
+    # ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(all_pts3d, all_pts2d_L, all_pts2d_R, K1, D1, K2, D2, (w,h))
+    print(f"--- Final Reprojection error: {ret} ---\n")
 
 if __name__ == '__main__':
     if args.cmd == "cal":
         imfilenames = sorted(args.image)
-        K, uK, D = calibrate_sequence(imfilenames)
+        show_image = args.showimage
+        inlier_threshold = args.threshold
+        K, uK, D = calibrate_sequence(imfilenames, inlier_threshold = inlier_threshold, show_image = show_image)
         np.savetxt(args.kmatrix, K)
         np.savetxt(args.undkmatrix, uK)
         np.savetxt(args.dmatrix, D)
@@ -320,6 +304,25 @@ if __name__ == '__main__':
             image = imread(fname)
             image_und = cv2.undistort(image, K, D, None, uK)
             imsave("und_" + fname, image_und)
+    elif args.cmd == "ste":
+        if len(args.left)!=len(args.right):
+            print("Left and right sequences must have the same number of images.")
+            exit(0)
+        leftimgs = sorted(args.left)
+        rightimgs = sorted(args.right)
+        show_image = args.showimage
+        inlier_threshold = args.threshold
+
+
+        Kright = np.loadtxt(args.rightkmatrix) if os.path.exists(args.rightkmatrix) else None
+        Kleft = np.loadtxt(args.leftkmatrix) if os.path.exists(args.leftkmatrix) else None
+        Dright = np.loadtxt(args.rightdmatrix) if os.path.exists(args.rightdmatrix) else None
+        Dleft = np.loadtxt(args.leftdmatrix) if os.path.exists(args.leftdmatrix) else None
+        calibrate_stereo_rig(leftimgs, rightimgs, inlier_threshold=inlier_threshold, show_image=show_image, K1=Kleft, D1=Dleft, K2=Kright, D2=Dright)
+
+
+
+        # print(args)
 
     # print(args)
 
