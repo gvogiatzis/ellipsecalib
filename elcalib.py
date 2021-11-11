@@ -352,11 +352,22 @@ if __name__ == '__main__':
         show_image = args.showimage
         inlier_threshold = args.threshold
 
-
-        Kright = np.loadtxt(args.rightkmatrix) if isfile(args.rightkmatrix) else None
-        Kleft = np.loadtxt(args.leftkmatrix) if isfile(args.leftkmatrix) else None
-        Dright = np.loadtxt(args.rightdmatrix) if isfile(args.rightdmatrix) else None
-        Dleft = np.loadtxt(args.leftdmatrix) if isfile(args.leftdmatrix) else None
+        if isfile(args.rightkmatrix) and isfile(args.rightdmatrix):
+            Kright = np.loadtxt(args.rightkmatrix)
+            Dright = np.loadtxt(args.rightdmatrix)
+        else:
+            Kright, uK, Dright = calibrate_sequence(rightimgs, inlier_threshold=inlier_threshold, show_image=show_image)
+            np.savetxt(args.rightkmatrix, Kright)
+            np.savetxt("rightnewk.txt", uK)
+            np.savetxt(args.rightdmatrix, Dright)
+        if isfile(args.leftkmatrix) and isfile(args.leftdmatrix):
+            Kleft = np.loadtxt(args.leftkmatrix)
+            Dleft = np.loadtxt(args.leftdmatrix)
+        else:
+            Kleft, uK, Dleft = calibrate_sequence(leftimgs, inlier_threshold=inlier_threshold, show_image=show_image)
+            np.savetxt(args.leftkmatrix, Kleft)
+            np.savetxt("leftnewk.txt", uK)
+            np.savetxt(args.leftdmatrix, Dleft)
         K1, D1, K2, D2, R, T = calibrate_stereo_rig(leftimgs, rightimgs, inlier_threshold=inlier_threshold, show_image=show_image, K1=Kleft, D1=Dleft, K2=Kright, D2=Dright)
         np.savetxt("steleftK.txt", K1)
         np.savetxt("steleftD.txt", D1)
