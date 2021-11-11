@@ -65,25 +65,21 @@ if __name__ == '__main__':
         exit(0)
 
 
-import numpy as np
-from skimage import data
 from skimage.io import imshow, imread,imsave
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import math
 import numpy as np
 import scipy
-import os.path
 
 from sklearn.neighbors import NearestNeighbors
 
-from skimage.filters import threshold_otsu
 from skimage.segmentation import clear_border
 from skimage.measure import label, regionprops
-from skimage.morphology import closing, square
 from skimage.color import label2rgb, rgb2gray
 import skimage as sk
-from glob import glob
+
+from os.path import splitext, isfile
 
 from collections import namedtuple
 
@@ -91,6 +87,11 @@ import cv2
 
 
 MAX_ASPECT_RATIO = 20
+
+
+def fname_to_txtfile(fname):
+    fn, ext = splitext(fname)
+    return fn+'.txt'
 
 def ellipse2conic(r):
     a = r.minor_axis_length
@@ -126,25 +127,32 @@ def detect_ellipses(image):
     # MIN_ELLIP_SIZE = image.size // (500 * 500)
     MAX_ELLIP_SIZE = image.size // (8 * 8)
     # apply threshold
-    thresh = threshold_otsu(image)
 
-    bw = image < thresh
+    thresh = np.linspace(0, 1, 5)[1:-1]
 
+    # thresh = threshold_otsu(image)
+    # print(thresh)
+    # bw = image < thresh
+    best_ellipse_regions = []
+    for t in thresh:
+        bw = image < t
+        cleared = clear_border(bw)
 
-    cleared = clear_border(bw)
+        # label image regions
+        label_image = label(cleared)
+        # plt.imshow(bw)
+        # plt.show()
 
-    # label image regions
-    label_image = label(cleared)
-    # plt.imshow(label_image)
-    # plt.show()
+        ellipse_regions = []
+        for r in regionprops(label_image):
+            a = r.major_axis_length
+            b = r.minor_axis_length
+            if MIN_ELLIP_SIZE< r.area <MAX_ELLIP_SIZE and b>1 and abs(math.log(a/b)) < math.log(MAX_ASPECT_RATIO):
+                ellipse_regions.append(r)
+        if len(best_ellipse_regions) < len(ellipse_regions):
+            best_ellipse_regions = ellipse_regions
 
-    ellipse_regions = []
-    for r in regionprops(label_image):
-        a = r.major_axis_length
-        b = r.minor_axis_length
-        if MIN_ELLIP_SIZE< r.area <MAX_ELLIP_SIZE and b>1 and abs(math.log(a/b)) < math.log(MAX_ASPECT_RATIO):
-            ellipse_regions.append(r)
-    return ellipse_regions
+    return best_ellipse_regions
 
 def distsignatures(D):
     N = len(D)
@@ -172,6 +180,15 @@ def distsignatures(D):
 
     return signatures
 
+def ellipse_proper_center(ellipse):
+    C = ellipse2conic(ellipse)
+    u, s, v = np.linalg.svd(C)
+    s = np.sqrt(s)
+    U = u @ np.diag([s[0], s[1], -s[2]])
+    V = np.diag([s[0], s[1], s[2]]) @ v
+    V = np.linalg.inv(V)
+    return V[0:2,2]/V[2,2]
+
 def detect_pattern(fname, show_image=False,inlier_threshold=5.0):
     print(f"******* Detecting pattern in {fname} *******")
     image = rgb2gray(imread(fname))
@@ -180,7 +197,8 @@ def detect_pattern(fname, show_image=False,inlier_threshold=5.0):
     ellipses = detect_ellipses(image)
     print(f"{len(ellipses)} dots detected in image.")
 
-    el_centres = np.array([[e.centroid[1], e.centroid[0]] for e in ellipses])
+    # el_centres = np.array([[e.centroid[1], e.centroid[0]] for e in ellipses])
+    el_centres = np.array([ellipse_proper_center(e) for e in ellipses])
     Ne = len(ellipses)
     Np = len(p)
 
@@ -239,13 +257,33 @@ def detect_pattern(fname, show_image=False,inlier_threshold=5.0):
 
     return pts3d, pts2d, best_inliers
 
+def load_img_points(fname_txt):
+    M = np.loadtxt(fname_txt)
+    pts3d = M[:, 0:3]
+    pts2d = M[:, 3:5]
+    inliers = M[:, 5].astype(bool)
+    return pts3d, pts2d, inliers
+
+def save_img_points(fname_txt,pts3d, pts2d, inliers):
+    np.savetxt(fname_txt, np.concatenate((pts3d, pts2d, inliers[:,None]), axis=1))
+    M = np.loadtxt(fname_txt)
+
+def detect_pattern_cached(fname, show_image=False,inlier_threshold=5.0):
+    fname_txt = fname_to_txtfile(fname)
+    if isfile(fname_txt):
+        pts3d, pts2d, inliers = load_img_points(fname_txt)
+    else:
+        pts3d, pts2d, inliers = detect_pattern(fname, show_image=show_image, inlier_threshold=inlier_threshold)
+        save_img_points(fname_txt, pts3d, pts2d, inliers)
+    return pts3d, pts2d, inliers
+
 def calibrate_sequence(fnames,inlier_threshold=5.0, show_image=False):
     print("")
     fnames = sorted(fnames)
     all_pts3d=[]
     all_pts2d=[]
     for fname in fnames:
-        pts3d, pts2d, inliers = detect_pattern(fname,show_image=show_image,inlier_threshold=inlier_threshold)
+        pts3d, pts2d, inliers = detect_pattern_cached(fname, show_image=show_image, inlier_threshold=inlier_threshold)
         pts3d = pts3d[inliers]
         pts2d = pts2d[inliers]
         if len(pts3d)>0:
@@ -266,8 +304,8 @@ def calibrate_stereo_rig(leftfnames,rightfnames,inlier_threshold=5.0, show_image
     all_pts2d_L=[]
     all_pts2d_R=[]
     for leftimg, rightimg in zip(leftfnames, rightfnames):
-        pts3d_L, pts2d_L, inliers_L = detect_pattern(leftimg, show_image=show_image, inlier_threshold=inlier_threshold)
-        pts3d_R, pts2d_R, inliers_R = detect_pattern(rightimg, show_image=show_image, inlier_threshold=inlier_threshold)
+        pts3d_L, pts2d_L, inliers_L = detect_pattern_cached(leftimg, show_image=show_image, inlier_threshold=inlier_threshold)
+        pts3d_R, pts2d_R, inliers_R = detect_pattern_cached(rightimg, show_image=show_image, inlier_threshold=inlier_threshold)
         inliers = inliers_L & inliers_R
         print(f"{sum(inliers)} dots visible in both left and right cameras")
         pts3d = pts3d_L[inliers] # could have used pts3d_R[inliers], they are the same.
@@ -314,10 +352,10 @@ if __name__ == '__main__':
         inlier_threshold = args.threshold
 
 
-        Kright = np.loadtxt(args.rightkmatrix) if os.path.exists(args.rightkmatrix) else None
-        Kleft = np.loadtxt(args.leftkmatrix) if os.path.exists(args.leftkmatrix) else None
-        Dright = np.loadtxt(args.rightdmatrix) if os.path.exists(args.rightdmatrix) else None
-        Dleft = np.loadtxt(args.leftdmatrix) if os.path.exists(args.leftdmatrix) else None
+        Kright = np.loadtxt(args.rightkmatrix) if isfile(args.rightkmatrix) else None
+        Kleft = np.loadtxt(args.leftkmatrix) if isfile(args.leftkmatrix) else None
+        Dright = np.loadtxt(args.rightdmatrix) if isfile(args.rightdmatrix) else None
+        Dleft = np.loadtxt(args.leftdmatrix) if isfile(args.leftdmatrix) else None
         calibrate_stereo_rig(leftimgs, rightimgs, inlier_threshold=inlier_threshold, show_image=show_image, K1=Kleft, D1=Dleft, K2=Kright, D2=Dright)
 
 
