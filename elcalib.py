@@ -322,6 +322,7 @@ def calibrate_stereo_rig(leftfnames,rightfnames,inlier_threshold=5.0, show_image
     # ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(all_pts3d, all_pts2d_L, all_pts2d_R, cameraMatrix1=None, distCoeffs1=None, cameraMatrix2=None, distCoeffs2=None, imageSize=(w,h))
     # ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(all_pts3d, all_pts2d_L, all_pts2d_R, K1, D1, K2, D2, (w,h))
     print(f"--- Final Reprojection error: {ret} ---\n")
+    return K1, D1, K2, D2, R, T
 
 if __name__ == '__main__':
     if args.cmd == "cal":
@@ -356,8 +357,13 @@ if __name__ == '__main__':
         Kleft = np.loadtxt(args.leftkmatrix) if isfile(args.leftkmatrix) else None
         Dright = np.loadtxt(args.rightdmatrix) if isfile(args.rightdmatrix) else None
         Dleft = np.loadtxt(args.leftdmatrix) if isfile(args.leftdmatrix) else None
-        calibrate_stereo_rig(leftimgs, rightimgs, inlier_threshold=inlier_threshold, show_image=show_image, K1=Kleft, D1=Dleft, K2=Kright, D2=Dright)
-
+        K1, D1, K2, D2, R, T = calibrate_stereo_rig(leftimgs, rightimgs, inlier_threshold=inlier_threshold, show_image=show_image, K1=Kleft, D1=Dleft, K2=Kright, D2=Dright)
+        np.savetxt("steleftK.txt", K1)
+        np.savetxt("steleftD.txt", D1)
+        np.savetxt("sterightK.txt", K2)
+        np.savetxt("sterightD.txt", D2)
+        np.savetxt("steR.txt", R)
+        np.savetxt("steT.txt", T)
 
 
         # print(args)
