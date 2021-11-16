@@ -1,0 +1,10 @@
+minDisparity        0
+numDisparities      16 * 16
+blockSize           7
+P1                  400
+P2                  5000
+mode                cv2.StereoSGBM_MODE_HH
+speckleWindowSize   50
+speckleRange        200
+uniquenessRatio     1
+disp12MaxDiff       10

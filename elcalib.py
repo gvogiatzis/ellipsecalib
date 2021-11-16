@@ -13,6 +13,14 @@ if __name__ == '__main__':
                                        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
                                        description='Calibrate a stereo rig using images taken from left and right camera, of a calibration pattern.',
                                        epilog="Notes: (1) You should make sure that the left and right sequences have the same number of images and these images are sorted so that pairs of elements from each list correspond to the same frame.  (2) If the left and right camera files exist, they will be used to constrain the optimisation. Otherwise the filenames are used to output the computed camera matrices.")
+    parser_rec = subparsers.add_parser("rec", help="Perform stereo rectification on two sequences of images.",
+                                       formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+                                       description='Warp a sequence of stereo image pairs so that epipolar lines are parallel. This needs the left and right K matrices, the R-t transformation between cameras and the rad distortion coefficients for left and right image.',
+                                       epilog="Notes: (1) You should make sure that the left and right sequences have the same number of images and these images are sorted so that pairs of elements from each list correspond to the same frame.")
+    parser_dep = subparsers.add_parser("dep", help="Estimate a depth-map from pairs of rectified images.",
+                                       formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+                                       description='Perform a dense-stereo computation on a sequence of rectified stereo image pairs.',
+                                       epilog="Notes: (1) You should make sure that the left and right sequences have the same number of images and these images are sorted so that pairs of elements from each list correspond to the same frame.")
 
 
     # Single camera calibration
@@ -59,6 +67,45 @@ if __name__ == '__main__':
     parser_ste.add_argument("-rd", "--rightdmatrix", type=str,default="rightd.txt",
                         help="Name of textfile that stores the right lin. distortion params matrix")
 
+    parser_rec.add_argument("-l","--left", type=str,  nargs="+",
+                        help="One or more of the left pattern image filenames. Wildcards should work, e.g 'img*.png'",
+                        required=True)
+    parser_rec.add_argument("-r","--right", type=str,  nargs="+",
+                        help="One or more of the right pattern image filenames. Wildcards should work, e.g 'img*.png'",
+                        required=True)
+    parser_rec.add_argument("-rk", "--rightkmatrix", type=str,default="sterightK.txt",
+                        help="Name of textfile that stores the right calibration matrix.")
+    parser_rec.add_argument("-rd", "--rightdmatrix", type=str,default="sterightD.txt",
+                        help="Name of textfile that stores the right lin. distortion params matrix")
+    parser_rec.add_argument("-lk", "--leftkmatrix", type=str,default="steleftK.txt",
+                        help="Name of textfile that stores the left calibration matrix")
+    parser_rec.add_argument("-ld", "--leftdmatrix", type=str,default="steleftD.txt",
+                        help="Name of textfile that stores the left lin. distortion params matrix")
+    parser_rec.add_argument("-rot", "--rotation", type=str,default="steR.txt",
+                        help="Name of textfile that stores the 3x3 rotation matrix")
+    parser_rec.add_argument("-tra", "--translation", type=str,default="steT.txt",
+                        help="Name of textfile that stores the 3x1 translation vector")
+    parser_rec.add_argument("-q", "--qmatrix", type=str,default="Q.txt",
+                        help="Name of textfile that stores the parameters of the Q matrix that maps disparities to x,y,z points.",)
+
+    parser_dep.add_argument("-l","--left", type=str,  nargs="+",
+                        help="One or more of the left pattern image filenames. Wildcards should work, e.g 'img*.png'",
+                        required=True)
+    parser_dep.add_argument("-r","--right", type=str,  nargs="+",
+                        help="One or more of the right pattern image filenames. Wildcards should work, e.g 'img*.png'",
+                        required=True)
+    parser_dep.add_argument("-par", "--parameters", type=str,default="params.txt",
+                        help="Name of textfile that stores the parameters of the SGBM dense stereo algorithm.")
+    parser_dep.add_argument("-q", "--qmatrix", type=str,default="Q.txt",
+                        help="Name of textfile that stores the parameters of the Q matrix that maps disparities to x,y,z points.",)
+    parser_dep.add_argument("-ply", "--ply",action='store_true',
+                        help="If set, causes the program to convert each depth map to a pointcloud and save it as a .ply file.")
+    parser_dep.add_argument("-c", "--clip",metavar=('min', 'max'), type=float, nargs=2,
+                        help="Clip disparity results to limit them between min and max.")
+
+
+
+
     args = parser.parse_args()
     if args.cmd is None:
         parser.print_usage()
@@ -79,7 +126,7 @@ from skimage.measure import label, regionprops
 from skimage.color import label2rgb, rgb2gray
 import skimage as sk
 
-from os.path import splitext, isfile
+from os.path import splitext, isfile, split, join
 
 from collections import namedtuple
 
@@ -88,10 +135,44 @@ import cv2
 
 MAX_ASPECT_RATIO = 20
 
+def parse_params_file(f):
+    d = {}
+    with open("params.txt") as f:
+        for line in f:
+            key, val = line.split(maxsplit=1)
+            d[key] = eval(val)
+    return d
+
+def fname_to_rectfname(fname):
+    path, name = split(fname)
+    fn, ext = splitext(name)
+    return join(path, "rect_"+fn+".png")
+
+def fname_to_depthfname(fname):
+    path, name = split(fname)
+    fn, ext = splitext(name)
+    return join(path, "depth_"+fn+".png")
+
+def fname_to_maskfname(fname):
+    path, name = split(fname)
+    fn, ext = splitext(name)
+    return join(path, "mask_"+fn+".png")
+
+def fname_to_plyfile(fname):
+    fn, ext = splitext(fname)
+    return fn+'.ply'
 
 def fname_to_txtfile(fname):
     fn, ext = splitext(fname)
     return fn+'.txt'
+
+def load_matrix(fname):
+    if isfile(fname):
+        M = np.loadtxt(fname)
+    else:
+        print(f"Aborting. File {fname} not found!")
+        exit(0)
+    return M
 
 def ellipse2conic(r):
     a = r.minor_axis_length
@@ -324,6 +405,57 @@ def calibrate_stereo_rig(leftfnames,rightfnames,inlier_threshold=5.0, show_image
     print(f"--- Final Reprojection error: {ret} ---\n")
     return K1, D1, K2, D2, R, T
 
+ply_header = '''ply
+format ascii 1.0
+element vertex %(vert_num)d
+property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+end_header
+'''
+
+def write_ply(fn, verts, colors):
+    verts = verts.reshape(-1, 3)
+    colors = colors.reshape(-1, 3)
+    verts = np.hstack([verts, colors])
+    with open(fn, 'wb') as f:
+        f.write((ply_header % dict(vert_num=len(verts))).encode('utf-8'))
+        np.savetxt(f, verts, fmt='%f %f %f %d %d %d ')
+
+def densestereo(leftimg,rightimg,Q,saveply=False, limits=None):
+    params = parse_params_file("params.txt")
+    stereo = cv2.StereoSGBM_create(**params)
+    # leftimg = 'aloeL.jpg'
+    # rightimg = 'aloeR.jpg'
+    imgL = cv2.cvtColor(cv2.imread(leftimg), cv2.COLOR_BGR2GRAY)
+    imgR = cv2.cvtColor(cv2.imread(rightimg), cv2.COLOR_BGR2GRAY)
+    disparity = stereo.compute(imgL, imgR)
+    if saveply:
+        imgL_clr = cv2.imread(leftimg)
+        disp = stereo.compute(imgL, imgR).astype(np.float32) / 16.0
+        if limits is not None:
+            m1,m2=limits
+            disp = disp.clip(m1,m2)
+        print('generating 3d point cloud...', )
+        points = cv2.reprojectImageTo3D(disp, Q)
+        colors = cv2.cvtColor(imgL_clr, cv2.COLOR_BGR2RGB)
+        mask = disparity > 0
+        out_points = points[mask]
+
+        out_colors = colors[mask]
+        write_ply(fname_to_plyfile(leftimg), out_points, out_colors)
+        print(f'{fname_to_plyfile(leftimg)} saved')
+
+    disp_pos = disparity.copy()
+    disp_pos[disp_pos < 0] = 0
+    disp_pos = (disp_pos / 16.0).astype(np.uint8)
+    disp_mask = ((disparity > -1) * 255).astype(np.uint8)
+    return disp_pos, disp_mask
+
+
 if __name__ == '__main__':
     if args.cmd == "cal":
         imfilenames = sorted(args.image)
@@ -352,14 +484,6 @@ if __name__ == '__main__':
         show_image = args.showimage
         inlier_threshold = args.threshold
 
-        if isfile(args.rightkmatrix) and isfile(args.rightdmatrix):
-            Kright = np.loadtxt(args.rightkmatrix)
-            Dright = np.loadtxt(args.rightdmatrix)
-        else:
-            Kright, uK, Dright = calibrate_sequence(rightimgs, inlier_threshold=inlier_threshold, show_image=show_image)
-            np.savetxt(args.rightkmatrix, Kright)
-            np.savetxt("rightnewk.txt", uK)
-            np.savetxt(args.rightdmatrix, Dright)
         if isfile(args.leftkmatrix) and isfile(args.leftdmatrix):
             Kleft = np.loadtxt(args.leftkmatrix)
             Dleft = np.loadtxt(args.leftdmatrix)
@@ -368,6 +492,14 @@ if __name__ == '__main__':
             np.savetxt(args.leftkmatrix, Kleft)
             np.savetxt("leftnewk.txt", uK)
             np.savetxt(args.leftdmatrix, Dleft)
+        if isfile(args.rightkmatrix) and isfile(args.rightdmatrix):
+            Kright = np.loadtxt(args.rightkmatrix)
+            Dright = np.loadtxt(args.rightdmatrix)
+        else:
+            Kright, uK, Dright = calibrate_sequence(rightimgs, inlier_threshold=inlier_threshold, show_image=show_image)
+            np.savetxt(args.rightkmatrix, Kright)
+            np.savetxt("rightnewk.txt", uK)
+            np.savetxt(args.rightdmatrix, Dright)
         K1, D1, K2, D2, R, T = calibrate_stereo_rig(leftimgs, rightimgs, inlier_threshold=inlier_threshold, show_image=show_image, K1=Kleft, D1=Dleft, K2=Kright, D2=Dright)
         np.savetxt("steleftK.txt", K1)
         np.savetxt("steleftD.txt", D1)
@@ -376,12 +508,45 @@ if __name__ == '__main__':
         np.savetxt("steR.txt", R)
         np.savetxt("steT.txt", T)
 
+    elif args.cmd == "rec":
+        if len(args.left)!=len(args.right):
+            print("Left and right sequences must have the same number of images.")
+            exit(0)
+        leftimgs = sorted(args.left)
+        rightimgs = sorted(args.right)
 
-        # print(args)
+        K1 = load_matrix(args.leftkmatrix)
+        D1 = load_matrix(args.leftdmatrix)
+        K2 = load_matrix(args.rightkmatrix)
+        D2 = load_matrix(args.rightdmatrix)
+        R = load_matrix(args.rotation)
+        T = load_matrix(args.translation)
+        h, w = rgb2gray(imread(leftimgs[0])).shape[:2]
 
-    # print(args)
-
-    # K1, D1 = calibrate_sequence("data/RDMcalibration/left_*.jpg")
-    # K2, D2 = calibrate_sequence("data/RDMcalibration/right_*.jpg")
-    #
-    # ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(objp, leftp, rightp, K1, D1, K2, D2, image_size)
+        REC1, REC2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(K1, D1, K2, D2,(w, h), R, T, 1.0, (0, 0))
+        np.savetxt(args.qmatrix, Q)
+        Map1 = cv2.initUndistortRectifyMap(K1, D1, REC1, P1, (w, h), cv2.CV_16SC2)
+        Map2 = cv2.initUndistortRectifyMap(K2, D2, REC2, P2, (w, h), cv2.CV_16SC2)
+        for leftimg, rightimg in zip(leftimgs, rightimgs):
+            print(f"L:{leftimg} R:{rightimg}")
+            I1 = imread(leftimg)
+            I2 = imread(rightimg)
+            I1new = cv2.remap(I1, Map1[0], Map1[1], cv2.INTER_LANCZOS4, cv2.BORDER_CONSTANT, 0)
+            I2new = cv2.remap(I2, Map2[0], Map2[1], cv2.INTER_LANCZOS4, cv2.BORDER_CONSTANT, 0)
+            imsave(fname_to_rectfname(leftimg), I1new)
+            imsave(fname_to_rectfname(rightimg), I2new)
+    elif args.cmd == "dep":
+        if len(args.left)!=len(args.right):
+            print("Left and right sequences must have the same number of images.")
+            exit(0)
+        leftimgs = sorted(args.left)
+        rightimgs = sorted(args.right)
+        if args.ply:
+            Q = load_matrix(args.qmatrix)
+        else:
+            Q=None
+        for leftimg, rightimg in zip(leftimgs, rightimgs):
+            print(f"L:{leftimg} R:{rightimg}")
+            disparity, disp_mask = densestereo(leftimg,rightimg,Q=Q,saveply=args.ply,limits=args.clip)
+            imsave(fname_to_depthfname(leftimg), disparity)
+            imsave(fname_to_maskfname(leftimg), disp_mask)
