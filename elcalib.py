@@ -272,7 +272,12 @@ def ellipse_proper_center(ellipse):
 
 def detect_pattern(fname, show_image=False,inlier_threshold=5.0):
     print(f"******* Detecting pattern in {fname} *******")
-    image = rgb2gray(imread(fname))
+    I = imread(fname)
+    if len(I.shape)==3:
+        image = rgb2gray(rgba2rgb(I))
+    else:
+        image = I / 255.0
+    # print(image.max())
     p = np.loadtxt('pattern.txt')
     p = p[:, 0:2]
     ellipses = detect_ellipses(image)
