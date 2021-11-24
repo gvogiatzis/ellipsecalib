@@ -400,7 +400,7 @@ def calibrate_stereo_rig(leftfnames,rightfnames,inlier_threshold=5.0, show_image
         all_pts3d.append(pts3d.astype(np.float32))
         all_pts2d_L.append(pts2d_L.astype(np.float32))
         all_pts2d_R.append(pts2d_R.astype(np.float32))
-    image = rgb2gray(imread(leftfnames[0]))
+    image = imread(leftfnames[0])
     h, w = image.shape[:2]
     ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(all_pts3d, all_pts2d_L, all_pts2d_R, cameraMatrix1=K1, distCoeffs1=D1, cameraMatrix2=K2, distCoeffs2=D2, imageSize=(w,h), flags=cv2.CALIB_USE_INTRINSIC_GUESS)
     # ret, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(all_pts3d, all_pts2d_L, all_pts2d_R, cameraMatrix1=K1, distCoeffs1=D1, cameraMatrix2=K2, distCoeffs2=D2, imageSize=(w,h), flags=cv2.CALIB_USE_INTRINSIC_GUESS)
@@ -526,7 +526,7 @@ if __name__ == '__main__':
         D2 = load_matrix(args.rightdmatrix)
         R = load_matrix(args.rotation)
         T = load_matrix(args.translation)
-        h, w = rgb2gray(imread(leftimgs[0])).shape[:2]
+        h, w = imread(leftimgs[0]).shape[:2]
 
         REC1, REC2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(K1, D1, K2, D2,(w, h), R, T, 1.0, (0, 0))
         np.savetxt(args.qmatrix, Q)
